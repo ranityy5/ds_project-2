@@ -1,0 +1,154 @@
+// =====================================================================================================
+//  Vaccination Dashboard - DAX measures
+//  Model tables expected (names as used below):
+//    dim_country, dim_year, dim_disease, dim_antigen, dim_coverage_category, dim_group,
+//    dim_intro_vaccine, dim_intro_status, dim_schedule_vaccine, dim_target_pop
+//    fact_coverage_best   (= view vw_coverage_best  OR  mart_coverage_best.csv)
+//    fact_coverage        (= all sources; ONLY use with a category filter - see Doses Administered)
+//    fact_disease_burden, fact_coverage_group, fact_disease_burden_group,
+//    fact_vaccine_intro, fact_vaccine_schedule, mart_coverage_vs_incidence, mart_first_introduction
+//  Create a measures table:  Home > Enter data > name it "_Measures", then paste each measure below
+//  (New measure).  NOTE: written for Power BI Desktop; test after import and adjust table names if you renamed them.
+// =====================================================================================================
+
+// ------------------------------------------------------------------ 0. PARAMETERS  (Modeling > New parameter, or DAX)
+Goal Parameter = GENERATESERIES(50, 100, 5)                                  // calculated TABLE - use as a slicer ("Coverage goal")
+Goal % = SELECTEDVALUE('Goal Parameter'[Goal Parameter], 90)                 // default = 90% (Immunization Agenda 2030)
+
+// ------------------------------------------------------------------ 1. COVERAGE
+Latest Data Year = CALCULATE(MAX(fact_coverage_best[year]), ALL(dim_year))
+
+Coverage % = AVERAGE(fact_coverage_best[coverage_pct])                       // mean of countries (each country counts once)
+
+Coverage % (latest year) =
+VAR y = [Latest Data Year]
+RETURN CALCULATE([Coverage %], dim_year[year] = y)
+
+Countries Reporting = DISTINCTCOUNT(fact_coverage_best[country_code])
+
+Countries At Goal =
+VAR g = [Goal %]
+RETURN COUNTROWS(FILTER(ADDCOLUMNS(VALUES(dim_country[country_code]), "@c", [Coverage %]), NOT ISBLANK([@c]) && [@c] >= g))
+
+Countries Below Goal =
+VAR g = [Goal %]
+RETURN COUNTROWS(FILTER(ADDCOLUMNS(VALUES(dim_country[country_code]), "@c", [Coverage %]), NOT ISBLANK([@c]) && [@c] < g))
+
+Countries Below 70% =
+COUNTROWS(FILTER(ADDCOLUMNS(VALUES(dim_country[country_code]), "@c", [Coverage %]), NOT ISBLANK([@c]) && [@c] < 70))
+
+% Countries At Goal = DIVIDE([Countries At Goal], [Countries Reporting])
+Gap To Goal (pts) = [Goal %] - [Coverage %]
+
+// Global, population-weighted WHO/UNICEF estimate (use with the group fact table)
+Global Coverage % =
+CALCULATE(AVERAGE(fact_coverage_group[coverage_pct]),
+          fact_coverage_group[group_type] = "GLOBAL", fact_coverage_group[category_code] = "WUENIC")
+
+Global Coverage % (latest) =
+VAR y = CALCULATE(MAX(fact_coverage_group[year]), ALL(dim_year))
+RETURN CALCULATE([Global Coverage %], dim_year[year] = y)
+
+Global Coverage % (2019) = CALCULATE([Global Coverage %], dim_year[year] = 2019)
+Change vs 2019 (pts) = [Global Coverage % (latest)] - [Global Coverage % (2019)]
+
+// Income / development / Gavi groups (filter the visual with dim_group[group_type], e.g. WB_LONG)
+Group Coverage % =
+CALCULATE(AVERAGE(fact_coverage_group[coverage_pct]), fact_coverage_group[category_code] = "WUENIC")
+
+// ------------------------------------------------------------------ 2. DROP-OFF BETWEEN DOSES
+DTP1 Coverage = CALCULATE([Coverage %], dim_antigen[antigen_code] = "DTPCV1")
+DTP3 Coverage = CALCULATE([Coverage %], dim_antigen[antigen_code] = "DTPCV3")
+DTP Drop-off % = DIVIDE([DTP1 Coverage] - [DTP3 Coverage], [DTP1 Coverage])
+
+MCV1 Coverage = CALCULATE([Coverage %], dim_antigen[antigen_code] = "MCV1")
+MCV2 Coverage = CALCULATE([Coverage %], dim_antigen[antigen_code] = "MCV2")
+Measles Drop-off % = DIVIDE([MCV1 Coverage] - [MCV2 Coverage], [MCV1 Coverage])
+
+// ------------------------------------------------------------------ 3. UNVACCINATED (ZERO-DOSE PROXY)
+// infants targeted x (1 - DTP1 coverage), country by country, for the selected year
+Est. Unvaccinated Infants =
+SUMX(
+    FILTER(fact_coverage_best,
+           fact_coverage_best[antigen_code] = "DTPCV1" && NOT ISBLANK(fact_coverage_best[target_any])),
+    fact_coverage_best[target_any] * (1 - fact_coverage_best[coverage_pct] / 100)
+)
+
+Infants Targeted =
+SUMX(FILTER(fact_coverage_best, fact_coverage_best[antigen_code] = "DTPCV1" && NOT ISBLANK(fact_coverage_best[target_any])),
+     fact_coverage_best[target_any])
+
+% Of All Unvaccinated (share) =
+DIVIDE([Est. Unvaccinated Infants], CALCULATE([Est. Unvaccinated Infants], ALL(dim_country)))
+
+// ------------------------------------------------------------------ 4. DISEASE BURDEN
+Reported Cases = SUM(fact_disease_burden[cases])                                             // NULL cases are NOT zero: blanks stay blank
+Incidence per 100k = AVERAGE(fact_disease_burden[incidence_per_100k])                        // mean of countries, per 100,000 of the disease's base population
+Countries With Cases = CALCULATE(DISTINCTCOUNT(fact_disease_burden[country_code]), fact_disease_burden[cases] > 0)
+
+Global Cases =
+CALCULATE(SUM(fact_disease_burden_group[cases]), fact_disease_burden_group[group_type] = "GLOBAL")
+
+Global Cases Baseline (1980-82 avg) =
+DIVIDE(CALCULATE([Global Cases], FILTER(ALL(dim_year), dim_year[year] >= 1980 && dim_year[year] <= 1982)), 3)
+
+Reduction vs 1980-82 % = 1 - DIVIDE([Global Cases], [Global Cases Baseline (1980-82 avg)])
+
+Cases Index (1980-82 = 100) = DIVIDE([Global Cases], [Global Cases Baseline (1980-82 avg)]) * 100
+
+Cases YoY % =
+VAR cur  = MAX(dim_year[year])
+VAR prev = CALCULATE([Reported Cases], dim_year[year] = cur - 1)
+RETURN DIVIDE([Reported Cases] - prev, prev)
+
+// ------------------------------------------------------------------ 5. COVERAGE vs INCIDENCE (uses mart_coverage_vs_incidence)
+Pair Coverage % = AVERAGE(mart_coverage_vs_incidence[coverage_pct])
+Pair Incidence (per million) = AVERAGE(mart_coverage_vs_incidence[incidence_reported])
+
+Pearson r (coverage vs log incidence) =
+VAR t = FILTER(mart_coverage_vs_incidence, NOT ISBLANK(mart_coverage_vs_incidence[incidence_reported]))
+VAR n = COUNTROWS(t)
+VAR sx = SUMX(t, mart_coverage_vs_incidence[coverage_pct])
+VAR sy = SUMX(t, LN(mart_coverage_vs_incidence[incidence_reported] + 0.1))
+VAR sxy = SUMX(t, mart_coverage_vs_incidence[coverage_pct] * LN(mart_coverage_vs_incidence[incidence_reported] + 0.1))
+VAR sxx = SUMX(t, mart_coverage_vs_incidence[coverage_pct] ^ 2)
+VAR syy = SUMX(t, LN(mart_coverage_vs_incidence[incidence_reported] + 0.1) ^ 2)
+RETURN DIVIDE(n * sxy - sx * sy, SQRT((n * sxx - sx ^ 2) * (n * syy - sy ^ 2)))
+
+// High coverage but high incidence (measles pair): count of countries meeting BOTH conditions in the selected year
+High Coverage & High Incidence =
+COUNTROWS(
+    FILTER(
+        ADDCOLUMNS(VALUES(dim_country[country_code]), "@cov", [Pair Coverage %], "@inc", [Pair Incidence (per million)]),
+        [@cov] >= [Goal %] && [@inc] > 100))
+
+// ------------------------------------------------------------------ 6. VACCINE INTRODUCTION
+Countries In Data (intro) = CALCULATE(DISTINCTCOUNT(fact_vaccine_intro[country_code]), ALL(dim_intro_status))
+Countries Introduced (nationwide) =
+CALCULATE(DISTINCTCOUNT(fact_vaccine_intro[country_code]), dim_intro_status[is_nationwide] = 1)
+Countries Introduced (any) =
+CALCULATE(DISTINCTCOUNT(fact_vaccine_intro[country_code]), dim_intro_status[is_introduced] = 1)
+% Countries Introduced = DIVIDE([Countries Introduced (any)], [Countries In Data (intro)])
+
+Median First Introduction Year = MEDIAN(mart_first_introduction[first_year])       // matrix: rows = vaccine, columns = WHO region
+Introduction Lag vs Europe (years) =
+[Median First Introduction Year] - CALCULATE([Median First Introduction Year], dim_country[who_region] = "EURO")
+
+// ------------------------------------------------------------------ 7. SCHEDULE
+Schedule Entries = COUNTROWS(fact_vaccine_schedule)
+Countries With Schedule = DISTINCTCOUNT(fact_vaccine_schedule[country_code])
+Max Doses In Schedule = MAX(fact_vaccine_schedule[schedule_round])
+
+// ------------------------------------------------------------------ 8. DEMAND / FORECAST
+// Administrative doses reported by countries (fact_coverage holds several sources -> restrict to ADMIN to avoid double counting)
+Doses Administered =
+CALCULATE(SUM(fact_coverage[doses]), fact_coverage[category_code] = "ADMIN")
+// Line chart: X = dim_year[year], Y = [Doses Administered], filter antigen = MCV1 / MCV2.
+// Then Analytics pane > Forecast > length 1 year, confidence 95% (built-in exponential smoothing).
+
+Target Doses For Goal = SUMX(FILTER(fact_coverage_best, NOT ISBLANK(fact_coverage_best[target_any])), fact_coverage_best[target_any]) * [Goal %] / 100
+
+// ------------------------------------------------------------------ 9. DATA QUALITY (page 6)
+Records Flagged >100% Coverage = CALCULATE(COUNTROWS(fact_coverage), fact_coverage[coverage_gt100_flag] = 1)
+Records Recomputed = CALCULATE(COUNTROWS(fact_coverage), fact_coverage[coverage_was_recomputed] = 1)
+Share Missing Cases % = DIVIDE(CALCULATE(COUNTROWS(fact_disease_burden), ISBLANK(fact_disease_burden[cases])), COUNTROWS(fact_disease_burden))

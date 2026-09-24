@@ -1,0 +1,28 @@
+{
+  "name": "Vaccination Insights",
+  "dataColors": ["#2a7ab0", "#e76f51", "#2a9d8f", "#e9c46a", "#264653", "#8ab17d", "#6a4c93", "#c1121f"],
+  "background": "#FFFFFF",
+  "foreground": "#1f2933",
+  "tableAccent": "#2a7ab0",
+  "good": "#2a9d8f",
+  "neutral": "#e9c46a",
+  "bad": "#c1121f",
+  "maximum": "#264653",
+  "center": "#e9c46a",
+  "minimum": "#f4a261",
+  "textClasses": {
+    "title":   { "fontFace": "Segoe UI Semibold", "fontSize": 13, "color": "#1f2933" },
+    "label":   { "fontFace": "Segoe UI", "fontSize": 10, "color": "#52606d" },
+    "callout": { "fontFace": "Segoe UI Semibold", "fontSize": 28, "color": "#264653" },
+    "header":  { "fontFace": "Segoe UI Semibold", "fontSize": 11, "color": "#1f2933" }
+  },
+  "visualStyles": {
+    "*": {
+      "*": {
+        "title": [{ "show": true, "fontColor": { "solid": { "color": "#1f2933" } }, "fontSize": 12 }],
+        "border": [{ "show": true, "color": { "solid": { "color": "#e4e7eb" } }, "radius": 6 }]
+      }
+    },
+    "page": { "*": { "background": [{ "color": { "solid": { "color": "#f5f7fa" } }, "transparency": 0 }] } }
+  }
+}
